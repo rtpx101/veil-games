@@ -155,7 +155,145 @@ var oGC=HTMLCanvasElement.prototype.getContext;
 HTMLCanvasElement.prototype.getContext=function(t,a){var gl=oGC.apply(this,arguments);if(gl&&typeof WebGL2RenderingContext==='function'&&gl instanceof WebGL2RenderingContext)hookDraws(gl);return gl;};
 
 })();
-</script><script>/* Round 20: Underground/Rooms/Lights ("Tint Color" default 0.5) is a 2x tint shader in the original game; the port's GLSL dropped the 2x, so light tubes and light cones rendered at half strength. */(function(){var A='u_xlat16_0 = vs_COLOR0 * _Color;',B='SV_Target0 = u_xlat16_0 * _LightmapModulation;';function fix(s){return(typeof s==='string'&&s.indexOf(A)>=0&&s.indexOf(B)>=0)?s.split(B).join('SV_Target0 = u_xlat16_0 * _LightmapModulation * 2.0;'):s;}[self.WebGLRenderingContext,self.WebGL2RenderingContext].forEach(function(C){if(!C)return;var o=C.prototype.shaderSource;C.prototype.shaderSource=function(sh,src){return o.call(this,sh,fix(src));};});})();</script><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src blob:; child-src blob:; connect-src 'self' blob: data:; img-src blob: data:; media-src blob: data:; font-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>Fallout Shelter</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}*{box-sizing:border-box}[hidden]{display:none!important}
+</script><script>/* Round 20: Underground/Rooms/Lights ("Tint Color" default 0.5) is a 2x tint shader in the original game; the port's GLSL dropped the 2x, so light tubes and light cones rendered at half strength. */(function(){var A='u_xlat16_0 = vs_COLOR0 * _Color;',B='SV_Target0 = u_xlat16_0 * _LightmapModulation;';function fix(s){return(typeof s==='string'&&s.indexOf(A)>=0&&s.indexOf(B)>=0)?s.split(B).join('SV_Target0 = u_xlat16_0 * _LightmapModulation * 2.0;'):s;}[self.WebGLRenderingContext,self.WebGL2RenderingContext].forEach(function(C){if(!C)return;var o=C.prototype.shaderSource;C.prototype.shaderSource=function(sh,src){return o.call(this,sh,fix(src));};});})();</script><script>/* Round 21: lunchbox / pet-crate opening.
+   1) Underground/PetShader and Underground/PetsCarrierOverlay shipped as
+      AssetRipper DummyShaderTextExporter stubs (position-only VS, solid white
+      FS). The 3D pet (and carrier overlay) therefore draws as opaque white
+      blobs beside the UNLOCK HERE starburst. Rewrite them like Underground/Dweller
+      but sampling _BodyTex * _LightmapModulation, discarding low alpha.
+   2) Lunchbox card flip: front and back quads are drawn with Cull Off (NGUI /
+      Unlit/Transparent), so mid-rotation both sides are visible at once — a
+      hard vertical split with the face on one half and the back on the other.
+      Discard back-facing fragments on those UI/unlit texturing shaders.
+*/
+(function(){
+  var PET_VS = [
+    '#version 300 es',
+    '#define HLSLCC_ENABLE_UNIFORM_BUFFERS 1',
+    '#define UNITY_UNIFORM',
+    '#define UNITY_SUPPORTS_UNIFORM_LOCATION 1',
+    '#define UNITY_LOCATION(x) layout(location = x)',
+    'uniform vec4 hlslcc_mtx4x4unity_ObjectToWorld[4];',
+    'uniform vec4 hlslcc_mtx4x4unity_MatrixVP[4];',
+    'uniform vec4 _BodyTex_ST;',
+    'in highp vec4 in_POSITION0;',
+    'in highp vec2 in_TEXCOORD0;',
+    'out highp vec2 vs_TEXCOORD0;',
+    'vec4 u_xlat0;',
+    'vec4 u_xlat1;',
+    'void main()',
+    '{',
+    '    u_xlat0 = in_POSITION0.yyyy * hlslcc_mtx4x4unity_ObjectToWorld[1];',
+    '    u_xlat0 = hlslcc_mtx4x4unity_ObjectToWorld[0] * in_POSITION0.xxxx + u_xlat0;',
+    '    u_xlat0 = hlslcc_mtx4x4unity_ObjectToWorld[2] * in_POSITION0.zzzz + u_xlat0;',
+    '    u_xlat0 = hlslcc_mtx4x4unity_ObjectToWorld[3] * in_POSITION0.wwww + u_xlat0;',
+    '    u_xlat1 = u_xlat0.yyyy * hlslcc_mtx4x4unity_MatrixVP[1];',
+    '    u_xlat1 = hlslcc_mtx4x4unity_MatrixVP[0] * u_xlat0.xxxx + u_xlat1;',
+    '    u_xlat1 = hlslcc_mtx4x4unity_MatrixVP[2] * u_xlat0.zzzz + u_xlat1;',
+    '    gl_Position = hlslcc_mtx4x4unity_MatrixVP[3] * u_xlat0.wwww + u_xlat1;',
+    '    vs_TEXCOORD0.xy = in_TEXCOORD0.xy * _BodyTex_ST.xy + _BodyTex_ST.zw;',
+    '    return;',
+    '}',
+  ].join('\n');
+
+  var PET_FS = [
+    '#version 300 es',
+    'precision highp float;',
+    'precision highp int;',
+    '#define HLSLCC_ENABLE_UNIFORM_BUFFERS 1',
+    '#define UNITY_UNIFORM',
+    '#define UNITY_SUPPORTS_UNIFORM_LOCATION 1',
+    '#define UNITY_LOCATION(x) layout(location = x)',
+    'uniform mediump vec4 _LightmapModulation;',
+    'uniform mediump sampler2D _BodyTex;',
+    'in highp vec2 vs_TEXCOORD0;',
+    'layout(location = 0) out mediump vec4 SV_Target0;',
+    'void main()',
+    '{',
+    '    vec4 u_xlat0 = texture(_BodyTex, vs_TEXCOORD0.xy);',
+    '    if(u_xlat0.w < 0.01) discard;',
+    '    SV_Target0.xyz = u_xlat0.xyz * _LightmapModulation.xyz;',
+    '    SV_Target0.w = u_xlat0.w;',
+    '    return;',
+    '}',
+  ].join('\n');
+
+  var stats = {petVS:0, petFS:0, cull:0};
+  self.__lunchboxfix = stats;
+
+  function isStubVS(s){
+    return s.indexOf('in highp vec4 in_POSITION0;') >= 0
+      && s.indexOf('in_TEXCOORD') < 0
+      && s.indexOf('in_COLOR') < 0
+      && s.indexOf('in_NORMAL') < 0
+      && s.indexOf('vs_TEXCOORD') < 0
+      && s.indexOf('vs_COLOR') < 0
+      && s.indexOf('SV_Target') < 0
+      && s.indexOf('SV_TARGET') < 0
+      && s.indexOf('hlslcc_mtx4x4unity_ObjectToWorld[3] * in_POSITION0.wwww') >= 0
+      && s.indexOf('texture(') < 0;
+  }
+  function isStubFS(s){
+    return s.indexOf('SV_TARGET0 = vec4(1.0, 1.0, 1.0, 1.0);') >= 0
+      && s.indexOf('texture(') < 0
+      && s.indexOf('_Color') < 0;
+  }
+  function addFaceCull(s){
+    if(s.indexOf('gl_FrontFacing') >= 0) return s;
+    if(s.indexOf('SV_Target0') < 0 && s.indexOf('SV_TARGET0') < 0) return s;
+    if(s.indexOf('texture(_MainTex') < 0) return s;
+    if(/_LightmapModulation|_TintColor|_RoomExposure|vs_WPOSY|_FoilTex|_BodyTex/.test(s)) return s;
+    var n = s.replace(/void main\s*\(\s*\)\s*\{/, 'void main(){\n    if(!gl_FrontFacing) discard;');
+    if(n !== s) stats.cull++;
+    return n;
+  }
+  function fix(s){
+    if(typeof s !== 'string') return s;
+    if(isStubFS(s)){ stats.petFS++; return PET_FS; }
+    if(isStubVS(s)){ stats.petVS++; return PET_VS; }
+    return addFaceCull(s);
+  }
+  [self.WebGLRenderingContext, self.WebGL2RenderingContext].forEach(function(C){
+    if(!C) return;
+    var o = C.prototype.shaderSource;
+    C.prototype.shaderSource = function(sh, src){ return o.call(this, sh, fix(src)); };
+  });
+
+  // The dummy Shader objects had no sampler uniforms, so Unity never calls
+  // uniform1i(_BodyTex, unit). It still binds the atlas on whatever unit is
+  // active (often TEXTURE7); the sampler stays at the default 0 and the pet
+  // is sampled from the wrong unit (invisible / discarded). Fix at draw time.
+  var TEXTURE0 = 0x84C0;
+  function bindBodyTex(gl){
+    var p = gl.getParameter(gl.CURRENT_PROGRAM);
+    if(!p) return;
+    var loc = gl.getUniformLocation(p, '_BodyTex');
+    if(!loc) return;
+    if(gl.getUniformLocation(p, '_MainTex')) return;
+    var want = gl.getParameter(gl.ACTIVE_TEXTURE) - TEXTURE0;
+    if(want >= 0 && gl.getUniform(p, loc) !== want){
+      gl.uniform1i(loc, want);
+      stats.texUnit = (stats.texUnit || 0) + 1;
+    }
+  }
+  function wrapDraw(gl){
+    if(!gl || gl.__lunchboxDraw) return;
+    ['drawElements','drawArrays','drawElementsInstanced','drawArraysInstanced'].forEach(function(name){
+      if(typeof gl[name] !== 'function') return;
+      var o = gl[name].bind(gl);
+      gl[name] = function(){ bindBodyTex(gl); return o.apply(gl, arguments); };
+    });
+    gl.__lunchboxDraw = true;
+  }
+  var _gc = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function(t, a){
+    var gl = _gc.call(this, t, a);
+    if(gl && (t === 'webgl' || t === 'webgl2' || t === 'experimental-webgl')) wrapDraw(gl);
+    return gl;
+  };
+
+})();
+</script><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src blob:; child-src blob:; connect-src 'self' blob: data:; img-src blob: data:; media-src blob: data:; font-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>Fallout Shelter</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}*{box-sizing:border-box}[hidden]{display:none!important}
 #game-wrap{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;background:#000}
 canvas#game{position:fixed!important;inset:0!important;display:block;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;aspect-ratio:auto!important;object-fit:fill;background:#000;outline:none}
 #game-toolbar{position:fixed;bottom:max(5px,env(safe-area-inset-bottom));left:max(7px,env(safe-area-inset-left));z-index:25;pointer-events:none;color:#1aff80;font:12px/1 monospace}
